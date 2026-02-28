@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Klesis - Loopback Test</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      padding: 20px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    h1 { color: #00d4ff; margin-bottom: 8px; }
+    p.desc { color: #666; font-size: 12px; margin-bottom: 24px; }
+    .pass { color: #00ff41; }
+    .fail { color: #ff006e; }
+    .info { color: #00d4ff; }
+    .dim { color: #666; }
+    pre {
+      background: #1a1a2e;
+      padding: 16px;
+      border-radius: 8px;
+      margin: 8px 0;
+      overflow-x: auto;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    button {
+      background: transparent;
+      color: #00ff41;
+      border: 2px solid #00ff41;
+      padding: 12px 24px;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 8px;
+      font-size: 14px;
+      letter-spacing: 1px;
+      min-height: 44px;
+    }
+    button:hover { background: #00ff41; color: #0a0a0a; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    .custom-test {
+      margin-top: 24px;
+      padding: 16px;
+      background: #1a1a2e;
+      border-radius: 8px;
+    }
+    .custom-test input {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #e0e0e0;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      width: 100%;
+      margin: 8px 0;
+      outline: none;
+    }
+    .custom-test input:focus { border-color: #00ff41; }
+  </style>
+</head>
+<body>
+  <h1>Klesis Loopback Test</h1>
+  <p class="desc">Encode → decode without audio hardware. Proves the ggwave pipeline works.</p>
+  <button id="run">Run All Tests</button>
+  <pre id="results"></pre>
+
+  <div class="custom-test">
+    <label>Custom message test:</label>
+    <input id="custom-input" type="text" placeholder="Type a message..." maxlength="140">
+    <button id="custom-btn" disabled>Test Message</button>
+    <pre id="custom-result"></pre>
+  </div>
+
+  <script type="module">
+    import { initEngine, encode, decode, PROTOCOLS, getEngineSampleRate } from '../src/audio/engine.js';
+
+    const results = document.getElementById('results');
+    const runBtn = document.getElementById('run');
+    const customBtn = document.getElementById('custom-btn');
+    const customInput = document.getElementById('custom-input');
+    const customResult = document.getElementById('custom-result');
+
+    let engineReady = false;
+
+    function log(msg, type) {
+      const cls = type || '';
+      const prefix = type === 'pass' ? 'PASS' : type === 'fail' ? 'FAIL' : '    ';
+      results.innerHTML += `<span class="${cls}">[${prefix}] ${escapeHtml(msg)}</span>\n`;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    runBtn.addEventListener('click', async () => {
+      results.innerHTML = '';
+      runBtn.disabled = true;
+
+      // 1. Engine init (use 48000 Hz for loopback test — no real hardware)
+      if (!engineReady) {
+        try {
+          await initEngine(48000, msg => log(msg, 'info'));
+          log('Engine initialized at ' + getEngineSampleRate() + ' Hz', 'pass');
+          engineReady = true;
+          customBtn.disabled = false;
+        } catch (e) {
+          log('Engine init failed: ' + e.message, 'fail');
+          runBtn.disabled = false;
+          return;
+        }
+      } else {
+        log('Engine already initialized', 'info');
+      }
+
+      // 2. Protocol loopback tests
+      log('', 'dim');
+      log('── Protocol Tests ──', 'info');
+      for (const [name, proto] of Object.entries(PROTOCOLS)) {
+        const msg = 'Hello ' + name;
+        try {
+          const samples = encode(msg, proto.id, 10);
+          const decoded = decode(samples);
+          const duration = (samples.length / getEngineSampleRate()).toFixed(2);
+          const ok = decoded === msg;
+          log(`${name} (ID ${proto.id}): "${msg}" → ${samples.length} samples (${duration}s) → "${decoded}"`, ok ? 'pass' : 'fail');
+        } catch (e) {
+          log(`${name}: ${e.message}`, 'fail');
+        }
+      }
+
+      // 3. Edge cases
+      log('', 'dim');
+      log('── Edge Cases ──', 'info');
+
+      // Empty string
+      try {
+        encode('', 1, 10);
+        log('Empty string: should have thrown', 'fail');
+      } catch (e) {
+        log('Empty string rejected: ' + e.message, 'pass');
+      }
+
+      // 1 character
+      try {
+        const s = encode('A', 1, 10);
+        const d = decode(s);
+        log(`1 char: "A" → ${s.length} samples (${(s.length / getEngineSampleRate()).toFixed(2)}s) → "${d}"`, d === 'A' ? 'pass' : 'fail');
+      } catch (e) {
+        log('1 char: ' + e.message, 'fail');
+      }
+
+      // 140 bytes (max)
+      const max140 = 'a'.repeat(140);
+      try {
+        const s = encode(max140, 1, 10);
+        const d = decode(s);
+        const ok = d === max140;
+        log(`140 bytes: ${s.length} samples (${(s.length / getEngineSampleRate()).toFixed(2)}s), decoded ${d?.length} chars`, ok ? 'pass' : 'fail');
+      } catch (e) {
+        log('140 bytes: ' + e.message, 'fail');
+      }
+
+      // 141 bytes (over limit)
+      try {
+        encode('a'.repeat(141), 1, 10);
+        log('141 bytes: should have thrown', 'fail');
+      } catch (e) {
+        log('141 bytes rejected: ' + e.message, 'pass');
+      }
+
+      // Special characters
+      try {
+        const msg = 'Hello! @#$%^&*()';
+        const s = encode(msg, 1, 10);
+        const d = decode(s);
+        log(`Special chars: "${msg}" → "${d}"`, d === msg ? 'pass' : 'fail');
+      } catch (e) {
+        log('Special chars: ' + e.message, 'fail');
+      }
+
+      // 4. Sample format verification
+      log('', 'dim');
+      log('── Sample Format ──', 'info');
+      const testSamples = encode('format check', 1, 10);
+      log(`Type: ${testSamples.constructor.name}`, testSamples instanceof Float32Array ? 'pass' : 'fail');
+
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < testSamples.length; i++) {
+        if (testSamples[i] < min) min = testSamples[i];
+        if (testSamples[i] > max) max = testSamples[i];
+      }
+      const rangeOk = min >= -1 && max <= 1;
+      log(`Range: [${min.toFixed(6)}, ${max.toFixed(6)}]`, rangeOk ? 'pass' : 'fail');
+
+      // 5. Timing summary
+      log('', 'dim');
+      log('── Duration Estimates (AUDIBLE_FAST) ──', 'info');
+      for (const len of [1, 10, 50, 100, 140]) {
+        try {
+          const s = encode('x'.repeat(len), 1, 10);
+          log(`${String(len).padStart(3)} chars: ${(s.length / getEngineSampleRate()).toFixed(2)}s`, 'dim');
+        } catch (e) {
+          log(`${len} chars: ${e.message}`, 'fail');
+        }
+      }
+
+      log('', 'dim');
+      log('── Done ──', 'info');
+      runBtn.disabled = false;
+    });
+
+    // Custom message test
+    customBtn.addEventListener('click', () => {
+      const msg = customInput.value;
+      if (!msg) return;
+      customResult.innerHTML = '';
+
+      try {
+        const byteLen = new TextEncoder().encode(msg).length;
+        const samples = encode(msg, 1, 10);
+        const decoded = decode(samples);
+        const duration = (samples.length / getEngineSampleRate()).toFixed(2);
+        const ok = decoded === msg;
+        customResult.innerHTML = [
+          `<span class="dim">Bytes: ${byteLen} / 140</span>`,
+          `<span class="dim">Samples: ${samples.length} (${duration}s)</span>`,
+          `<span class="dim">Sent:    "${escapeHtml(msg)}"</span>`,
+          `<span class="dim">Decoded: "${escapeHtml(decoded || '(null)')}"</span>`,
+          `<span class="${ok ? 'pass' : 'fail'}">Match: ${ok ? 'YES' : 'NO'}</span>`,
+        ].join('\n');
+      } catch (e) {
+        customResult.innerHTML = `<span class="fail">Error: ${escapeHtml(e.message)}</span>`;
+      }
+    });
+
+    customInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') customBtn.click();
+    });
+  </script>
+</body>
+</html>

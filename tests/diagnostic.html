@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Klesis - Audio Diagnostic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      padding: 16px;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    h1 { color: #00d4ff; margin-bottom: 4px; font-size: 20px; }
+    h2 { color: #00ff41; font-size: 14px; margin: 16px 0 8px; letter-spacing: 2px; }
+    .desc { color: #666; font-size: 11px; margin-bottom: 16px; }
+    .pass { color: #00ff41; }
+    .fail { color: #ff006e; }
+    .info { color: #00d4ff; }
+    .dim { color: #666; }
+    .warn { color: #ffbe0b; }
+
+    .panel {
+      background: #1a1a2e;
+      padding: 12px;
+      border-radius: 8px;
+      margin: 8px 0;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .stat { display: flex; justify-content: space-between; margin: 2px 0; }
+    .stat-label { color: #666; }
+    .stat-value { color: #e0e0e0; }
+
+    button {
+      background: transparent;
+      color: #00ff41;
+      border: 2px solid #00ff41;
+      padding: 10px 20px;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 8px;
+      font-size: 13px;
+      letter-spacing: 1px;
+      min-height: 44px;
+      margin: 4px;
+    }
+    button:hover { background: #00ff41; color: #0a0a0a; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.active { background: #00ff41; color: #0a0a0a; }
+
+    select {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      margin: 4px;
+    }
+
+    .meter-bar {
+      height: 20px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 4px 0;
+    }
+    .meter-fill {
+      height: 100%;
+      background: #00ff41;
+      transition: width 0.05s;
+      border-radius: 4px;
+    }
+    .meter-fill.hot { background: #ff006e; }
+    .meter-fill.warm { background: #ffbe0b; }
+
+    .decoded-msg {
+      font-size: 18px;
+      color: #00ff41;
+      text-align: center;
+      padding: 12px;
+      background: rgba(0,255,65,0.08);
+      border: 1px solid rgba(0,255,65,0.3);
+      border-radius: 8px;
+      margin: 8px 0;
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .decoded-msg.empty { color: #666; font-size: 12px; border-color: rgba(255,255,255,0.05); background: transparent; }
+
+    pre {
+      background: #1a1a2e;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      overflow-x: auto;
+      max-height: 200px;
+      overflow-y: auto;
+      margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Audio Diagnostic</h1>
+  <p class="desc">Test the full speaker → mic → decode pipeline on a single device.</p>
+
+  <button id="init-btn">Initialize Audio</button>
+
+  <div id="main-ui" style="display:none">
+    <h2>-- DEVICE INFO --</h2>
+    <div class="panel">
+      <div class="stat"><span class="stat-label">Sample Rate</span><span class="stat-value" id="sample-rate">—</span></div>
+      <div class="stat"><span class="stat-label">Engine Status</span><span class="stat-value" id="engine-status">—</span></div>
+      <div class="stat"><span class="stat-label">Mic Status</span><span class="stat-value" id="mic-status">—</span></div>
+    </div>
+
+    <h2>-- PLAY TEST TONE --</h2>
+    <div class="panel">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+        <select id="protocol-select">
+          <option value="0">Normal (slow)</option>
+          <option value="1" selected>Fast</option>
+          <option value="2">Fastest</option>
+        </select>
+        <button id="play-btn">Play Tone</button>
+      </div>
+      <div class="stat" style="margin-top:8px"><span class="stat-label">Encoded</span><span class="stat-value" id="encode-info">—</span></div>
+    </div>
+
+    <h2>-- LIVE AMPLITUDE --</h2>
+    <div class="panel">
+      <div class="meter-bar"><div class="meter-fill" id="rms-bar" style="width:0%"></div></div>
+      <div class="stat"><span class="stat-label">RMS</span><span class="stat-value" id="rms-val">0.00000</span></div>
+      <div class="stat"><span class="stat-label">Peak</span><span class="stat-value" id="peak-val">0.00000</span></div>
+      <div class="stat"><span class="stat-label">Chunks fed</span><span class="stat-value" id="chunk-count">0</span></div>
+    </div>
+
+    <h2>-- DECODE STATUS --</h2>
+    <div class="decoded-msg empty" id="decoded-msg">Waiting for signal...</div>
+    <pre id="decode-log"></pre>
+  </div>
+
+  <script type="module">
+    import { initEngine, encode, decode, PROTOCOLS, getEngineSampleRate } from '../src/audio/engine.js';
+
+    const BUFFER_SIZE = 4096;
+
+    let audioCtx = null;
+    let engineReady = false;
+    let micActive = false;
+    let chunkCount = 0;
+    let lastRms = 0;
+    let lastPeak = 0;
+    let decodeCount = 0;
+
+    // DOM refs
+    const initBtn = document.getElementById('init-btn');
+    const mainUi = document.getElementById('main-ui');
+    const sampleRateEl = document.getElementById('sample-rate');
+    const engineStatusEl = document.getElementById('engine-status');
+    const micStatusEl = document.getElementById('mic-status');
+    const playBtn = document.getElementById('play-btn');
+    const protocolSelect = document.getElementById('protocol-select');
+    const encodeInfoEl = document.getElementById('encode-info');
+    const rmsBar = document.getElementById('rms-bar');
+    const rmsVal = document.getElementById('rms-val');
+    const peakVal = document.getElementById('peak-val');
+    const chunkCountEl = document.getElementById('chunk-count');
+    const decodedMsgEl = document.getElementById('decoded-msg');
+    const decodeLog = document.getElementById('decode-log');
+
+    function log(msg) {
+      const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+      decodeLog.textContent += line;
+      decodeLog.scrollTop = decodeLog.scrollHeight;
+    }
+
+    // ── Init ──────────────────────────────────────
+    initBtn.addEventListener('click', async () => {
+      initBtn.disabled = true;
+      initBtn.textContent = 'Starting...';
+
+      try {
+        // 1. Create AudioContext (user gesture)
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        const rate = audioCtx.sampleRate;
+
+        mainUi.style.display = 'block';
+        sampleRateEl.textContent = rate + ' Hz';
+        log('AudioContext created at ' + rate + ' Hz');
+
+        // 2. Init ggwave with actual sample rate
+        await initEngine(rate, (msg) => { engineStatusEl.textContent = msg; });
+        engineReady = true;
+        engineStatusEl.textContent = 'Ready (' + rate + ' Hz)';
+        engineStatusEl.className = 'stat-value pass';
+        log('ggwave engine initialized');
+
+        // 3. Start mic capture (NO muting — we want to hear our own playback)
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: false, autoGainControl: false, noiseSuppression: false },
+        });
+        micActive = true;
+        micStatusEl.textContent = 'Active';
+        micStatusEl.className = 'stat-value pass';
+        log('Microphone access granted');
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        const processor = audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
+
+        processor.onaudioprocess = (event) => {
+          chunkCount++;
+          const data = event.inputBuffer.getChannelData(0);
+
+          // Amplitude
+          let sumSq = 0;
+          let peak = 0;
+          for (let i = 0; i < data.length; i++) {
+            const v = Math.abs(data[i]);
+            sumSq += data[i] * data[i];
+            if (v > peak) peak = v;
+          }
+          lastRms = Math.sqrt(sumSq / data.length);
+          lastPeak = peak;
+
+          // Always decode
+          const result = decode(data);
+          if (result) {
+            decodeCount++;
+            decodedMsgEl.textContent = result;
+            decodedMsgEl.className = 'decoded-msg';
+            log('DECODED #' + decodeCount + ': "' + result + '"');
+
+            // Reset after 5 seconds
+            setTimeout(() => {
+              if (decodedMsgEl.textContent === result) {
+                decodedMsgEl.textContent = 'Waiting for signal...';
+                decodedMsgEl.className = 'decoded-msg empty';
+              }
+            }, 5000);
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        // Start amplitude meter animation
+        updateMeter();
+
+        playBtn.disabled = false;
+        initBtn.textContent = 'Initialized';
+        log('Diagnostic ready — tap "Play Tone" to test');
+
+      } catch (e) {
+        log('ERROR: ' + e.message);
+        initBtn.disabled = false;
+        initBtn.textContent = 'Initialize Audio';
+        micStatusEl.textContent = 'Error: ' + e.message;
+        micStatusEl.className = 'stat-value fail';
+      }
+    });
+
+    // ── Amplitude meter ───────────────────────────
+    function updateMeter() {
+      const pct = Math.min(lastRms * 500, 100); // scale for visibility
+      rmsBar.style.width = pct + '%';
+      rmsBar.className = 'meter-fill' + (pct > 80 ? ' hot' : pct > 40 ? ' warm' : '');
+      rmsVal.textContent = lastRms.toFixed(5);
+      peakVal.textContent = lastPeak.toFixed(5);
+      chunkCountEl.textContent = chunkCount;
+      requestAnimationFrame(updateMeter);
+    }
+
+    // ── Play test tone ────────────────────────────
+    playBtn.addEventListener('click', () => {
+      if (!engineReady || !audioCtx) return;
+      playBtn.disabled = true;
+
+      const protocolId = parseInt(protocolSelect.value);
+      const msg = 'KLESIS_TEST';
+
+      try {
+        const samples = encode(msg, protocolId, 50);
+        const rate = getEngineSampleRate();
+        const duration = (samples.length / rate).toFixed(2);
+        encodeInfoEl.textContent = samples.length + ' samples, ' + duration + 's';
+        log('Encoded "' + msg + '" → ' + samples.length + ' samples (' + duration + 's) @ protocol ' + protocolId);
+
+        const buffer = audioCtx.createBuffer(1, samples.length, rate);
+        buffer.getChannelData(0).set(samples);
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+
+        source.onended = () => {
+          log('Playback complete');
+          playBtn.disabled = false;
+        };
+
+        // NOTE: We do NOT mute capture — that's the whole point of the diagnostic
+        log('Playing tone... (mic stays active — testing speaker→mic→decode path)');
+        source.start(0);
+
+      } catch (e) {
+        log('Encode error: ' + e.message);
+        playBtn.disabled = false;
+      }
+    });
+
+    playBtn.disabled = true;
+  </script>
+</body>
+</html>
